@@ -1,7 +1,5 @@
 # MacBook Pro Touch Bar Flickering Fix
 
-> This fork adds Intel/T2 brightness support, tested on MacBookPro15,2 with macOS 15.8.2. It sets a **fixed brightness**, not an automatic minimum floor. Intel keeps native idle dimming; `auto` and uninstall explicitly restore power and automatic brightness. Brightness control was verified, but intermittent flicker prevention and full sleep/wake recovery remain unverified. Automatic-curve experiments are excluded.
-
 **Stop the white flashes and flicker on your MacBook Pro Touch Bar.** It's free and open source, takes about 5 minutes, and needs no admin password.
 
 ![MacBook Pro Touch Bar flickering: white flashes on the right side of the Touch Bar in a dark room](docs/touchbar-flicker.gif)
@@ -30,7 +28,7 @@ In a dark room macOS turns the Touch Bar down very low, and a worn Touch Bar scr
 2. Copy these three lines, paste them into Terminal and press `Return`:
 
    ```sh
-   git clone https://github.com/tanner02/macbook-touch-bar-flicker-fix.git
+   git clone https://github.com/c0ldsheep/macbook-touch-bar-flicker-fix.git
    cd macbook-touch-bar-flicker-fix
    ./install.sh
    ```
@@ -64,7 +62,7 @@ If Terminal says `command not found: tbkeep`, open a new Terminal window and try
 
 ## What we tested
 
-We tested on a 13-inch MacBook Pro (M1, 2020) running macOS 27.
+We tested on a 13-inch MacBook Pro (M1, 2020) running macOS 27. Intel support was tested by [@tanner02](https://github.com/tanner02) on a MacBookPro15,2 (13-inch, 2018/2019, T2) running macOS 15.8.2.
 
 **1. We watched it in different situations.** That's the checklist at the top: dark vs. bright room, cold vs. warm, charger vs. battery, login screen vs. after login, and a flashlight on the camera.
 
@@ -92,7 +90,7 @@ We tested on a 13-inch MacBook Pro (M1, 2020) running macOS 27.
 - **It's brighter in the dark.** The Touch Bar no longer dims itself in a dark room.
 - **It hides the problem, it doesn't repair it.** The screen may get worse with time. If the flicker comes back (often in winter), raise the level, for example with `tbkeep 80`.
 - **It uses hidden macOS settings.** A future macOS update could change them. If that happens, tbkeep stops itself and the Touch Bar goes back to normal. Nothing breaks.
-- **We've tested one Mac so far:** a 13-inch MacBook Pro (M1, 2020) on macOS 27. Other Touch Bar MacBook Pros (2016 to 2022) may work. If yours doesn't, please [open an issue](https://github.com/c0ldsheep/macbook-touch-bar-flicker-fix/issues) and paste the output of `tbkeep version`.
+- **We've tested two Macs so far:** a 13-inch MacBook Pro (M1, 2020) on macOS 27, and an Intel MacBookPro15,2 (T2) on macOS 15.8.2. Other Touch Bar MacBook Pros from 2018 to 2022 may work. If yours doesn't, please [open an issue](https://github.com/c0ldsheep/macbook-touch-bar-flicker-fix/issues) and paste the output of `tbkeep version`.
 
 ## Other things you can try
 
@@ -126,7 +124,7 @@ No. A virus can't make a black area light up, and it can't follow the room tempe
 It's one short program, [tbkeep.m](tbkeep.m), that anyone can read. It's built on your own Mac from that file. It needs no admin password, never goes online, doesn't read your files, and only changes the Touch Bar, never your main screen.
 
 **Does it work on Intel MacBook Pros?**
-This fork adds support for the Intel/T2 USB HID backlight, tested on MacBookPro15,2. T1 models (2016–2017) remain unsupported by this backend. The installer checks compatibility first.
+Yes, on Intel MacBook Pros with the T2 chip (2018 to 2020), since version 1.2.0. This support was contributed by [@tanner02](https://github.com/tanner02) and tested on a MacBookPro15,2. On Intel, tbkeep holds the Touch Bar at your chosen brightness and leaves idle dimming to macOS. Brightness control is verified. Whether it stops the flicker on every Intel Mac, and how it behaves after sleep, still needs more testers, so please [tell us](https://github.com/c0ldsheep/macbook-touch-bar-flicker-fix/issues/1) how it goes. The 2016 and 2017 models (T1 chip) are not supported yet. The installer checks your Mac first, and installs nothing if it isn't supported.
 
 **How do I turn it off?**
 `tbkeep auto` pauses it. `tbkeep uninstall` removes it completely.

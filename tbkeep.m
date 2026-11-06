@@ -34,7 +34,7 @@
 #import <IOKit/hid/IOHIDManager.h>
 #import <limits.h>
 
-#define TBKEEP_VERSION "1.1.0-intel.2"
+#define TBKEEP_VERSION "1.2.0"
 
 @interface BrightnessSystemClient : NSObject
 - (id)copyPropertyForKey:(id)key;

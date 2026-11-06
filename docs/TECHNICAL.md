@@ -79,3 +79,10 @@ What we observed:
 ## Bug reports
 
 Please include the output of `tbkeep version` (the Mac model and macOS version) and `tbkeep`, and say what you see on the Touch Bar.
+
+
+## Intel/T2 backend
+
+When no CoreBrightness Touch Bar display is available, match Apple USB HID backlight VID/PID `05ac:8102`, usage `ff12:1`. Report 4 supplies the milli-nit range and automatic mode; report 3 selector 2 sets absolute milli-nits after disabling automatic mode. Writes are checked by readback. Percentages interpolate the reported nit range. Pause/uninstall restore automatic mode, power step 1, and factor 1000. Intel preserves native idle handling because the explicit off workaround can leave the bar dark.
+
+Tested: native compilation, device detection, 60% readback at about 219 nits, and restoration. Visual brightness change was confirmed; intermittent flicker prevention and a full sleep/wake cycle remain unverified. No custom auto-brightness curves are written.

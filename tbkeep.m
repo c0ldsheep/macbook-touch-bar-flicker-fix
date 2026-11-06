@@ -6,10 +6,11 @@
 //      switched off for the Touch Bar only. The main screen is a different display and is never touched.
 //   2. When you stop typing, macOS dims the Touch Bar to about 15% of its level for 15 seconds before
 //      switching it off. That dim stage is in the flicker range, so tbkeep switches the bar off right away.
-//      Any key or trackpad touch wakes it as usual.
+//      Intel/T2 keeps native idle dimming; the explicit off workaround is disabled there.
 //
 // It only talks to Apple's own brightness services (the private CoreBrightness and DFRBrightness
-// frameworks). No admin rights, no network, no files touched except its settings and its log.
+// frameworks), or the Intel/T2 Touch Bar USB HID backlight via IOKit.
+// No admin rights, no network, no files touched except its settings and its log.
 // If a future macOS removes those services, tbkeep stops itself and the Touch Bar keeps Apple's
 // normal behaviour.
 //
@@ -22,7 +23,7 @@
 //   tbkeep uninstall    remove tbkeep completely
 //   tbkeep run          background mode (started at login by ~/Library/LaunchAgents/local.tbkeep.plist)
 //
-// Build: clang -fobjc-arc -O2 -framework Foundation -framework AppKit tbkeep.m -o tbkeep
+// Build: clang -fobjc-arc -O2 -framework Foundation -framework AppKit -framework IOKit tbkeep.m -o tbkeep
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -30,8 +31,10 @@
 #import <dlfcn.h>
 #import <math.h>
 #import <sys/sysctl.h>
+#import <IOKit/hid/IOHIDManager.h>
+#import <limits.h>
 
-#define TBKEEP_VERSION "1.1.0"
+#define TBKEEP_VERSION "1.1.0-intel.2"
 
 @interface BrightnessSystemClient : NSObject
 - (id)copyPropertyForKey:(id)key;
@@ -41,6 +44,7 @@
 
 @interface DFRBrightnessClient : NSObject
 - (int)getDFRDisplayID;
+- (BOOL)turnOn;
 - (long long)getDimmingStep;
 - (BOOL)dimToStep:(long long)step withPeriod:(float)period;
 @end
@@ -128,6 +132,114 @@ static NSString *MissingAPI(void) {
   return nil;
 }
 
+// Intel/T2 uses a separate USB HID backlight, absent from CBDisplayList.
+// This sentinel is never passed to CoreBrightness.
+static const long long kIntelHIDDisplay = LLONG_MAX;
+
+static IOHIDDeviceRef IntelBacklight(void) {
+  IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, 0);
+  if (!manager) return NULL;
+  IOHIDManagerSetDeviceMatching(manager, (__bridge CFDictionaryRef)@{
+    @"VendorID": @0x05ac, @"ProductID": @0x8102,
+    @"PrimaryUsagePage": @0xff12, @"PrimaryUsage": @1 });
+  CFSetRef devices = IOHIDManagerCopyDevices(manager);
+  IOHIDDeviceRef result = NULL;
+  for (id object in (__bridge NSSet *)devices) {
+    IOHIDDeviceRef device = (__bridge IOHIDDeviceRef)object;
+    if (!IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone)) {
+      result = (IOHIDDeviceRef)CFRetain(device);
+      break;
+    }
+  }
+  if (devices) CFRelease(devices);
+  CFRelease(manager);
+  return result;
+}
+
+static void CloseIntel(IOHIDDeviceRef device) {
+  if (device) { IOHIDDeviceClose(device, 0); CFRelease(device); }
+}
+
+static BOOL ReadReport(IOHIDDeviceRef device, uint8_t report, uint8_t *bytes, CFIndex length) {
+  CFIndex actual = length;
+  return device && IOHIDDeviceGetReport(device, kIOHIDReportTypeFeature, report, bytes, &actual) == 0 &&
+         actual == length && bytes[0] == report;
+}
+
+static uint32_t ReadLE32(const uint8_t *bytes) {
+  return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+         ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static BOOL IntelCaps(IOHIDDeviceRef device, uint8_t *caps) {
+  if (!ReadReport(device, 4, caps, 116)) return NO;
+  uint32_t low = ReadLE32(caps + 4), high = ReadLE32(caps + 8);
+  return caps[1] == 1 && caps[2] == 0 && (caps[3] == 1 || caps[3] == 2) &&
+         low > 0 && high > low && high <= 2000000;
+}
+
+static BOOL IntelAuto(IOHIDDeviceRef device, uint8_t *caps, BOOL enabled) {
+  caps[3] = enabled ? 2 : 1;
+  if (IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, 4, caps, 116)) return NO;
+  uint8_t check[116];
+  return IntelCaps(device, check) && check[3] == caps[3];
+}
+
+static double IntelLevel(BOOL *autoOn, double *nits) {
+  IOHIDDeviceRef device = IntelBacklight();
+  uint8_t caps[116], value[14];
+  double result = NAN;
+  if (IntelCaps(device, caps) && ReadReport(device, 3, value, 14)) {
+    double current = ReadLE32(value + 2), low = ReadLE32(caps + 4), high = ReadLE32(caps + 8);
+    if (autoOn) *autoOn = caps[3] == 2;
+    if (nits) *nits = current / 1000.0;
+    result = (current - low) / (high - low);
+  }
+  CloseIntel(device);
+  return result;
+}
+
+static BOOL IntelApply(double level) {
+  IOHIDDeviceRef device = IntelBacklight();
+  uint8_t caps[116], previous[14];
+  BOOL ok = IntelCaps(device, caps);
+  uint8_t originalAuto = ok ? caps[3] : 2;
+  if (ok && isnan(level)) {
+    ok = IntelAuto(device, caps, YES);
+    // Reset the physical HID power/factor, not just the auto-brightness mode.
+    uint8_t on[11] = {1, 5, 1, 0, 0, 0, 0, 0xe8, 3, 0, 0};
+    BOOL powered = device && IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, 1, on, sizeof(on)) == 0;
+    id client = [[NSClassFromString(@"DFRBrightnessClient") alloc] init];
+    if ([client respondsToSelector:@selector(turnOn)]) [client turnOn];
+    ok = ok && powered;
+  }
+  else if (ok) {
+    uint32_t low = ReadLE32(caps + 4), high = ReadLE32(caps + 8);
+    uint32_t target = (uint32_t)llround(low + level * (high - low));
+    // Selector 2 means absolute milli-nits. Selector 3 (returned by GET_REPORT)
+    // does NOT set brightness; do not replay the readback as a write.
+    uint8_t value[14] = {3, 2};
+    for (int i = 0; i < 4; i++) value[2+i] = (target >> (8*i)) & 0xff;
+    ok = ReadReport(device, 3, previous, sizeof(previous));
+    if (!ok) { CloseIntel(device); return NO; }
+    ok = IntelAuto(device, caps, NO) &&
+         IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, 3, value, sizeof(value)) == 0;
+    uint8_t check[14];
+    if (ok) ok = ReadReport(device, 3, check, 14) &&
+                 llabs((long long)ReadLE32(check + 2) - target) <= 2000;
+    if (!ok) {
+      if (originalAuto == 1) {
+        uint8_t restore[14] = {3, 2};
+        memcpy(restore + 2, previous + 2, 4);
+        IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, 3, restore, sizeof(restore));
+      }
+      IntelAuto(device, caps, originalAuto == 2);
+    }
+  }
+  CloseIntel(device);
+  return ok;
+}
+
 static BOOL ReportsTouchBarType(BrightnessSystemClient *brightness, long long display, BOOL requireType) {
   id type = [brightness copyPropertyForKey:@"CBDisplayType" andDisplay:display];
   if (![type isKindOfClass:NSNumber.class]) return !requireType;
@@ -143,15 +255,20 @@ static long long TouchBarDisplay(BrightnessSystemClient *brightness, DFRBrightne
     if (display > 0 && ReportsTouchBarType(brightness, display, NO)) return display;
   }
   id list = [brightness copyPropertyForKey:@"CBDisplayList"];
-  if (![list isKindOfClass:NSDictionary.class]) return -1;
+  if (![list isKindOfClass:NSDictionary.class]) list = @{};
   for (NSNumber *display in list[@"CBDisplayDeviceIDs"])
     if ([display isKindOfClass:NSNumber.class] && ReportsTouchBarType(brightness, display.longLongValue, YES))
       return display.longLongValue;
-  return -1;
+  IOHIDDeviceRef device = IntelBacklight();
+  uint8_t caps[116];
+  BOOL intel = IntelCaps(device, caps);
+  CloseIntel(device);
+  return intel ? kIntelHIDDisplay : -1;
 }
 
 // The Touch Bar's current level (0-1), or NAN if the brightness service did not answer.
 static double CurrentLevel(BrightnessSystemClient *brightness, long long display, BOOL *autoOn, double *nits) {
+  if (display == kIntelHIDDisplay) return IntelLevel(autoOn, nits);
   id autoValue = [brightness copyPropertyForKey:@"DisplayBrightnessAuto" andDisplay:display];
   id value = [brightness copyPropertyForKey:@"DisplayBrightness" andDisplay:display];
   if (autoOn) *autoOn = [autoValue isKindOfClass:NSNumber.class] && [autoValue boolValue];
@@ -161,12 +278,14 @@ static double CurrentLevel(BrightnessSystemClient *brightness, long long display
 }
 
 static BOOL ApplyLevel(BrightnessSystemClient *brightness, long long display, double level) {
+  if (display == kIntelHIDDisplay) return IntelApply(level);
   BOOL autoOff = [brightness setProperty:@NO withKey:@"DisplayBrightnessAuto" andDisplay:display];
   BOOL levelSet = [brightness setProperty:@{@"Brightness" : @(level)} withKey:@"DisplayBrightness" andDisplay:display];
   return autoOff && levelSet;
 }
 
 static BOOL ApplyAuto(BrightnessSystemClient *brightness, long long display) {
+  if (display == kIntelHIDDisplay) return IntelApply(NAN);
   return [brightness setProperty:@YES withKey:@"DisplayBrightnessAuto" andDisplay:display];
 }
 
@@ -203,6 +322,8 @@ static BOOL ApplyAuto(BrightnessSystemClient *brightness, long long display) {
     return;
   }
   self.checksWithoutTouchBar = 0;
+  // Intel physical off can outlive the host wake state. Preserve native idle handling.
+  if (self.display == kIntelHIDDisplay) self.skipDim = NO;
 
   BOOL autoOn = NO;
   double current = CurrentLevel(self.brightness, self.display, &autoOn, NULL);
@@ -280,9 +401,10 @@ static int Status(BrightnessSystemClient *brightness, long long display) {
   double nits = 0, saved = SavedLevel();
   CurrentLevel(brightness, display, &autoOn, &nits);
   printf("tbkeep %s - Touch Bar flicker fix\n", TBKEEP_VERSION);
+  printf("Backend:        %s\n", display == kIntelHIDDisplay ? "Intel/T2 USB HID" : "CoreBrightness");
   printf("Saved level:    %s\n", isnan(saved) ? "auto (fix paused, macOS controls the Touch Bar)"
                                                : [NSString stringWithFormat:@"%.0f%%", saved * 100].UTF8String);
-  printf("Dim stage:      %s\n", SkipDimStage() ? "skipped (bar switches straight off)" : "kept (macOS default)");
+  printf("Dim stage:      %s\n", display == kIntelHIDDisplay ? "kept (native Intel idle handling)" : (SkipDimStage() ? "skipped (bar switches straight off)" : "kept (macOS default)"));
   printf("Touch Bar now:  %s, %.0f nits\n", autoOn ? "auto-brightness" : "fixed level", nits);
   printf("Background job: %s\n", AgentRunning() ? "running" : "NOT running (run ./install.sh)");
   return 0;
@@ -383,14 +505,17 @@ int main(int argc, const char *argv[]) {
     }
 
     if ([command isEqualToString:@"check"]) {
-      printf("OK: Touch Bar found and Apple's brightness services are available.\n");
+      printf("OK: Touch Bar found (%s).\n", display == kIntelHIDDisplay ? "Intel/T2 USB HID" : "CoreBrightness");
       return 0;
     }
     if ([command isEqualToString:@"status"]) return Status(brightness, display);
     if ([command isEqualToString:@"try"]) return Try(brightness, display);
     if ([command isEqualToString:@"auto"]) {
       WriteSetting(@"level", @"auto");
-      ApplyAuto(brightness, display);
+      if (!ApplyAuto(brightness, display)) {
+        fprintf(stderr, "Failed to restore Touch Bar auto-brightness.\n");
+        return 1;
+      }
       printf("Paused: macOS controls the Touch Bar again. Turn the fix back on with: tbkeep 60\n");
       return 0;
     }
@@ -407,8 +532,11 @@ int main(int argc, const char *argv[]) {
       PrintHelp();
       return 1;
     }
+    if (!ApplyLevel(brightness, display, percent / 100.0)) {
+      fprintf(stderr, "Failed to apply Touch Bar brightness.\n");
+      return 1;
+    }
     WriteSetting(@"level", [NSString stringWithFormat:@"%.2f", percent / 100.0]);
-    ApplyLevel(brightness, display, percent / 100.0);
     [NSThread sleepForTimeInterval:0.5];
     return Status(brightness, display);
   }

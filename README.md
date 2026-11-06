@@ -1,5 +1,7 @@
 # MacBook Pro Touch Bar Flickering Fix
 
+> This fork adds Intel/T2 brightness support, tested on MacBookPro15,2 with macOS 15.8.2. It sets a **fixed brightness**, not an automatic minimum floor. Intel keeps native idle dimming; `auto` and uninstall explicitly restore power and automatic brightness. Brightness control was verified, but intermittent flicker prevention and full sleep/wake recovery remain unverified. Automatic-curve experiments are excluded.
+
 **Stop the white flashes and flicker on your MacBook Pro Touch Bar.** It's free and open source, takes about 5 minutes, and needs no admin password.
 
 ![MacBook Pro Touch Bar flickering: white flashes on the right side of the Touch Bar in a dark room](docs/touchbar-flicker.gif)
@@ -28,7 +30,7 @@ In a dark room macOS turns the Touch Bar down very low, and a worn Touch Bar scr
 2. Copy these three lines, paste them into Terminal and press `Return`:
 
    ```sh
-   git clone https://github.com/c0ldsheep/macbook-touch-bar-flicker-fix.git
+   git clone https://github.com/tanner02/macbook-touch-bar-flicker-fix.git
    cd macbook-touch-bar-flicker-fix
    ./install.sh
    ```
@@ -124,7 +126,7 @@ No. A virus can't make a black area light up, and it can't follow the room tempe
 It's one short program, [tbkeep.m](tbkeep.m), that anyone can read. It's built on your own Mac from that file. It needs no admin password, never goes online, doesn't read your files, and only changes the Touch Bar, never your main screen.
 
 **Does it work on Intel MacBook Pros?**
-Maybe. We haven't tested one yet. The installer checks first: if your Mac isn't supported, it tells you and installs nothing.
+This fork adds support for the Intel/T2 USB HID backlight, tested on MacBookPro15,2. T1 models (2016–2017) remain unsupported by this backend. The installer checks compatibility first.
 
 **How do I turn it off?**
 `tbkeep auto` pauses it. `tbkeep uninstall` removes it completely.

@@ -3,6 +3,10 @@
 # Builds tbkeep from source on this Mac and starts it at every login. No admin password needed.
 # Running it again updates an existing install and keeps your level.
 set -euo pipefail
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Run this as your normal user, without sudo." >&2
+  exit 1
+fi
 cd "$(dirname "$0")"
 
 LABEL="local.tbkeep"
@@ -28,7 +32,7 @@ fi
 # Build into a new file and check this Mac before installing anything.
 mkdir -p "$DEST"
 rm -f "$DEST/tbkeep.new"
-clang -fobjc-arc -O2 -framework Foundation -framework AppKit tbkeep.m -o "$DEST/tbkeep.new"
+clang -fobjc-arc -O2 -framework Foundation -framework AppKit -framework IOKit tbkeep.m -o "$DEST/tbkeep.new"
 if ! "$DEST/tbkeep.new" check; then
   rm -f "$DEST/tbkeep.new"
   echo "Nothing was installed."
@@ -86,7 +90,7 @@ sleep 1
 echo
 "$DEST/tbkeep" status
 echo
-echo "Done. The Touch Bar now stays at a level where it does not flicker."
+echo "Done. The Touch Bar now stays at your chosen brightness. Check visually for flicker."
 case ":$PATH:" in
   *":$LINK_DIR:"*)
     echo "Change the level any time with: tbkeep 70   (all commands: tbkeep help)" ;;
